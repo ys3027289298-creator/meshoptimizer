@@ -360,15 +360,22 @@ void optimizeMaterials(cgltf_data* data, std::vector<MaterialInfo>& materials, s
 bool readImage(const cgltf_image& image, const char* input_path, std::string& data, std::string& mime_type);
 bool hasAlpha(const std::string& data, const char* mime_type);
 bool getDimensions(const std::string& data, const char* mime_type, int& width, int& height);
+bool validateAvif(const std::string& data, int* width = 0, int* height = 0);
 void adjustDimensions(int& width, int& height, float scale, int limit, bool pow2);
 const char* mimeExtension(const char* mime_type);
 
 #ifdef WITH_BASISU
-void encodeImagesBasis(std::string* encoded, const cgltf_data* data, const std::vector<ImageInfo>& images, const char* input_path, const Settings& settings);
+void encodeImagesBasis(std::string* encoded, const cgltf_data* data, const std::vector<ImageInfo>& images, const char* input_path, const Settings& settings, const std::string* avif_png = 0);
 #endif
 
 #ifdef WITH_LIBWEBP
-void encodeImagesWebP(std::string* encoded, const cgltf_data* data, const std::vector<ImageInfo>& images, const char* input_path, const Settings& settings);
+void encodeImagesWebP(std::string* encoded, const cgltf_data* data, const std::vector<ImageInfo>& images, const char* input_path, const Settings& settings, const std::string* avif_png = 0);
+#endif
+
+#ifdef WITH_LIBAVIF
+// decodes AVIF images that need transcoding into temporary PNG files alongside the encoded[] array;
+// the paths are consumed by encodeImagesBasis/encodeImagesWebP and removed afterwards
+void prepareImagesAvif(const cgltf_data* data, const std::vector<ImageInfo>& images, std::string* encoded, const char* input_path, const Settings& settings, std::string* temp_png);
 #endif
 
 void markScenes(cgltf_data* data, std::vector<NodeInfo>& nodes);

@@ -10,6 +10,7 @@ static const char* kMimeTypes[][2] = {
     {"image/png", ".png"},
     {"image/ktx2", ".ktx2"},
     {"image/webp", ".webp"},
+    {"image/avif", ".avif"},
 };
 
 static const char* inferMimeType(const char* path)
@@ -298,6 +299,129 @@ static bool hasTransparencyWebP(const std::string& data)
 	return false;
 }
 
+// AVIF images are ISO Base Media File Format (ISO/IEC 14496-12) boxes; this is a minimal,
+// allocation-free walker used to validate the container and to read ispe dimensions/auxl alpha info
+// without depending on libavif (which is only required when transcoding is requested).
+struct AvifBox
+{
+	size_t offset; // payload start
+	size_t end;    // payload end (exclusive)
+	char type[4];
+};
+
+static bool readAvifBox(const std::string& data, size_t offset, size_t limit, AvifBox& box)
+{
+	if (limit < offset + 8 || limit - offset < 8)
+		return false;
+
+	unsigned int size32 = (unsigned)readInt32BE(data, offset);
+	memcpy(box.type, data.data() + offset + 4, 4);
+
+	size_t header = 8;
+	size_t size = size32;
+
+	if (size32 == 1)
+	{
+		// 64-bit largesize box
+		if (limit - offset < 16)
+			return false;
+
+		uint64_t size64 = (uint64_t(unsigned(readInt32BE(data, offset + 8))) << 32) | unsigned(readInt32BE(data, offset + 12));
+
+		if (size64 > uint64_t(limit - offset))
+			return false;
+
+		size = size_t(size64);
+		header = 16;
+	}
+	else if (size32 == 0)
+	{
+		// box extends to end of enclosing container
+		size = limit - offset;
+	}
+
+	if (size < header || size > limit - offset)
+		return false;
+
+	box.offset = offset + header;
+	box.end = offset + size;
+	return true;
+}
+
+static bool findAvifBoxRecursive(const std::string& data, size_t offset, size_t limit, const char* type, AvifBox& result)
+{
+	while (offset + 8 <= limit)
+	{
+		AvifBox box;
+		if (!readAvifBox(data, offset, limit, box))
+			return false;
+
+		if (memcmp(box.type, type, 4) == 0)
+		{
+			result = box;
+			return true;
+		}
+
+		// meta/iprp/ipco are the container boxes that hold image property boxes
+		if (memcmp(box.type, "meta", 4) == 0 || memcmp(box.type, "iprp", 4) == 0 || memcmp(box.type, "ipco", 4) == 0)
+		{
+			// full box: version(1) + flags(3) precede the children
+			size_t child_offset = box.offset + (memcmp(box.type, "meta", 4) == 0 ? 4 : 0);
+
+			if (child_offset <= box.end && findAvifBoxRecursive(data, child_offset, box.end, type, result))
+				return true;
+		}
+
+		offset = box.end;
+	}
+
+	return false;
+}
+
+// https://aomediacodec.github.io/av1-avif/
+static bool getDimensionsAvif(const std::string& data, int& width, int& height)
+{
+	if (data.size() < 12)
+		return false;
+
+	// the first box must be ftyp with an AVIF-compatible brand
+	AvifBox ftyp;
+	if (!readAvifBox(data, 0, data.size(), ftyp) || memcmp(ftyp.type, "ftyp", 4) != 0)
+		return false;
+
+	bool avif_brand = false;
+	for (size_t i = ftyp.offset + 4; i + 4 <= ftyp.end; i += 4)
+	{
+		if (memcmp(data.data() + i, "avif", 4) == 0 || memcmp(data.data() + i, "avis", 4) == 0 || memcmp(data.data() + i, "mif1", 4) == 0)
+		{
+			avif_brand = true;
+			break;
+		}
+	}
+
+	if (!avif_brand)
+		return false;
+
+	// image spatial extents (ispe) full box: version/flags(4) width(4) height(4)
+	AvifBox ispe;
+	if (!findAvifBoxRecursive(data, ftyp.end, data.size(), "ispe", ispe) || ispe.end - ispe.offset < 12)
+		return false;
+
+	width = readInt32BE(data, ispe.offset + 4);
+	height = readInt32BE(data, ispe.offset + 8);
+
+	return width > 0 && height > 0;
+}
+
+static bool hasTransparencyAvif(const std::string& data)
+{
+	// an auxiliary AV1 alpha plane is declared via an auxC box whose AuxType starts with "av01" and
+	// contains the alpha aux type marker; the simplest robust signal available in the container is the
+	// presence of an auxl/auxC property box, which glTF AVIF textures use exclusively for alpha planes
+	AvifBox auxc;
+	return findAvifBoxRecursive(data, 0, data.size(), "auxC", auxc);
+}
+
 bool hasAlpha(const std::string& data, const char* mime_type)
 {
 	if (strcmp(mime_type, "image/png") == 0)
@@ -306,6 +430,8 @@ bool hasAlpha(const std::string& data, const char* mime_type)
 		return hasTransparencyKtx2(data);
 	else if (strcmp(mime_type, "image/webp") == 0)
 		return hasTransparencyWebP(data);
+	else if (strcmp(mime_type, "image/avif") == 0)
+		return hasTransparencyAvif(data);
 	else
 		return false;
 }
@@ -316,8 +442,36 @@ bool getDimensions(const std::string& data, const char* mime_type, int& width, i
 		return getDimensionsPng(data, width, height);
 	if (strcmp(mime_type, "image/jpeg") == 0)
 		return getDimensionsJpeg(data, width, height);
+	if (strcmp(mime_type, "image/avif") == 0)
+		return getDimensionsAvif(data, width, height);
 
 	return false;
+}
+
+// largest texture dimension gltfpack is willing to transcode; matches common hardware limits and keeps
+// the single-image RGBA working set bounded to 16384*16384*4 bytes worst case
+static const int kMaxAvifDimension = 16384;
+
+bool validateAvif(const std::string& data, int* width, int* height)
+{
+	if (width)
+		*width = 0;
+	if (height)
+		*height = 0;
+
+	int avif_width = 0, avif_height = 0;
+	if (!getDimensionsAvif(data, avif_width, avif_height))
+		return false;
+
+	if (avif_width > kMaxAvifDimension || avif_height > kMaxAvifDimension)
+		return false;
+
+	if (width)
+		*width = avif_width;
+	if (height)
+		*height = avif_height;
+
+	return true;
 }
 
 static int roundPow2(int value)

@@ -29,6 +29,18 @@ ifdef BASISU
     gltfpack: LDFLAGS+=-lpthread $(BASISU)/libbasisu_encoder.a
 endif
 
+ifdef LIBAVIF
+    $(GLTFPACK_OBJECTS): CXXFLAGS+=-DWITH_LIBAVIF
+    $(BUILD)/gltf/encodeavif.cpp.o: CXXFLAGS+=-I$(LIBAVIF)/include
+    gltfpack: LDFLAGS+=-L$(LIBAVIF)/lib -lavif
+endif
+
+# static libavif builds need their AV1 codec library linked explicitly (e.g. LIBAOM=/path/to/aom-prefix)
+ifdef LIBAOM
+    $(BUILD)/gltf/encodeavif.cpp.o: CXXFLAGS+=-I$(LIBAOM)/include
+    gltfpack: LDFLAGS+=-L$(LIBAOM)/lib -L$(LIBAOM)/lib/x86_64-linux-gnu -laom
+endif
+
 WASI_SDK?=/opt/wasi-sdk
 WASMCC?=$(WASI_SDK)/bin/clang++
 WASIROOT?=$(WASI_SDK)/share/wasi-sysroot

@@ -24,6 +24,8 @@ For better compression, you can use `-cc` option which applies additional compre
 
 gltfpack can also compress textures using Basis Universal format stored in a KTX2 container (`-tc` flag, requires support for `KHR_texture_basisu`) or using WebP format (`-tw` flag, requires support for `EXT_texture_webp`).
 
+gltfpack recognizes `EXT_texture_avif` textures (`image/avif`). When no texture compression is requested, AVIF images are validated and preserved verbatim, and the `EXT_texture_avif` extension is retained in the output. When `-tc`, `-tu` or `-tw` is used, AVIF images are decoded once and transcoded to KTX2 or WebP; this requires a build with libavif support (see [Building](#building)). A build without libavif still preserves AVIF textures in raw mode but explicitly fails with a diagnostic error if transcoding is requested, instead of dropping the textures.
+
 When working with glTF files that contain point clouds, gltfpack automatically processes the point cloud data to reduce the download size to the extent possible. In addition to aforementioned compression options (either `-c` or `-cc` are recommended), gltfpack can also prune point clouds to provide a more uniform density when `-si` option is used.
 
 ## Decompression
@@ -88,6 +90,7 @@ gltfpack supports most Khronos extensions and some multi-vendor extensions in th
 - KHR_texture_transform
 - EXT_mesh_gpu_instancing
 - EXT_meshopt_compression
+- EXT_texture_avif
 - EXT_texture_webp
 
 Even if the source file does not use extensions, gltfpack may use some extensions in the output file either by default or when certain options are used:
@@ -100,6 +103,7 @@ Even if the source file does not use extensions, gltfpack may use some extension
 - EXT_meshopt_compression (used when requested via `-c` or `-cc`)
 - EXT_mesh_gpu_instancing (used when requested via `-mi`)
 - EXT_texture_webp (used when requested via `-tw`)
+- EXT_texture_avif (preserved from input when AVIF textures are not transcoded)
 
 gltfpack does not support vendor-specific extensions or custom extensions, including ones defined in [Khronos glTF repository](https://github.com/KhronosGroup/glTF/tree/main/extensions/2.0/Vendor). Unknown extension nodes are discarded from the output.
 
@@ -143,6 +147,18 @@ git clone -b gltfpack https://github.com/zeux/basis_universal
 git clone https://github.com/webmproject/libwebp
 cmake . -DMESHOPT_BUILD_GLTFPACK=ON -DMESHOPT_GLTFPACK_BASISU_PATH=basis_universal -DMESHOPT_GLTFPACK_LIBWEBP_PATH=libwebp -DCMAKE_BUILD_TYPE=Release
 cmake --build . --target gltfpack --config Release
+```
+
+To enable decoding and transcoding of `EXT_texture_avif` textures, additionally provide a libavif (https://github.com/AOMediaCodec/libavif) installation or source tree via `MESHOPT_GLTFPACK_LIBAVIF_PATH`. When linking a static libavif whose AV1 codec libraries live outside the libavif prefix, pass them through `MESHOPT_GLTFPACK_LIBAVIF_EXTRA_LIBS`, for example:
+
+```
+cmake . -DMESHOPT_BUILD_GLTFPACK=ON -DMESHOPT_GLTFPACK_LIBAVIF_PATH=/opt/libavif -DMESHOPT_GLTFPACK_LIBAVIF_EXTRA_LIBS=/opt/libavif/lib/libaom.a
+```
+
+The Make build exposes the same integration through the `LIBAVIF` and optional `LIBAOM` variables:
+
+```
+make gltfpack LIBAVIF=/opt/libavif LIBAOM=/opt/libaom
 ```
 
 ## License

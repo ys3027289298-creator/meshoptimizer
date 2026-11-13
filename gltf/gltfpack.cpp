@@ -364,6 +364,33 @@ struct PrimitiveCacheEntry
 	QuantizationTexture qt;
 };
 
+static bool isAvifImage(const cgltf_image* image)
+{
+	if (!image)
+		return false;
+
+	if (image->mime_type && strcmp(image->mime_type, "image/avif") == 0)
+		return true;
+
+	if (image->uri && *image->uri && strncmp(image->uri, "data:", 5) != 0)
+		return getExtension(image->uri) == ".avif";
+
+	return false;
+}
+
+static bool hasAvifImages(const cgltf_data* data)
+{
+	for (size_t i = 0; i < data->images_count; ++i)
+		if (isAvifImage(&data->images[i]))
+			return true;
+
+	for (size_t i = 0; i < data->textures_count; ++i)
+		if (data->textures[i].has_avif)
+			return true;
+
+	return false;
+}
+
 static bool sameQuantization(const QuantizationTexture& lhs, const QuantizationTexture& rhs, const Settings& settings)
 {
 	if (!settings.quantize || settings.tex_float)
@@ -516,6 +543,7 @@ static size_t process(cgltf_data* data, const char* input_path, const char* outp
 	bool ext_texture_transform = false;
 	bool ext_texture_basisu = false;
 	bool ext_texture_webp = false;
+	bool ext_texture_avif = false;
 	bool ext_splatting = false;
 	bool ext_quantization = false;
 
@@ -537,14 +565,21 @@ static size_t process(cgltf_data* data, const char* input_path, const char* outp
 
 	std::vector<std::string> encoded_images(data->images_count);
 
+	std::vector<std::string> avif_temp_png(data->images_count);
+
+#ifdef WITH_LIBAVIF
+	if (hasAvifImages(data) && (settings.texture_ktx2 || settings.texture_webp))
+		prepareImagesAvif(data, images, encoded_images.data(), input_path, settings, avif_temp_png.data());
+#endif
+
 #ifdef WITH_BASISU
 	if (data->images_count && settings.texture_ktx2)
-		encodeImagesBasis(encoded_images.data(), data, images, input_path, settings);
+		encodeImagesBasis(encoded_images.data(), data, images, input_path, settings, avif_temp_png.data());
 #endif
 
 #ifdef WITH_LIBWEBP
 	if (data->images_count && settings.texture_webp)
-		encodeImagesWebP(encoded_images.data(), data, images, input_path, settings);
+		encodeImagesWebP(encoded_images.data(), data, images, input_path, settings, avif_temp_png.data());
 #endif
 
 	for (size_t i = 0; i < data->images_count; ++i)
@@ -552,6 +587,26 @@ static size_t process(cgltf_data* data, const char* input_path, const char* outp
 		const cgltf_image& image = data->images[i];
 
 		std::string* encoded = !encoded_images[i].empty() ? &encoded_images[i] : NULL;
+
+		// validate every AVIF image even when it is preserved verbatim; a malformed container must
+		// produce a diagnostic instead of silently emitting a dangling reference
+		if (!encoded && isAvifImage(&image))
+		{
+			std::string img_data;
+			std::string mime_type;
+			if (!readImage(image, input_path, img_data, mime_type))
+			{
+				encoded_images[i] = "error reading source file";
+			}
+			else
+			{
+				int width = 0, height = 0;
+				if (!validateAvif(img_data, &width, &height))
+					encoded_images[i] = "error validating AVIF image";
+			}
+
+			encoded = !encoded_images[i].empty() ? &encoded_images[i] : NULL;
+		}
 
 		comma(json_images);
 		append(json_images, "{");
@@ -562,6 +617,12 @@ static size_t process(cgltf_data* data, const char* input_path, const char* outp
 			*encoded = std::string(); // reclaim memory early
 	}
 
+#ifdef WITH_LIBAVIF
+	for (size_t i = 0; i < avif_temp_png.size(); ++i)
+		if (!avif_temp_png[i].empty())
+			removeFile(avif_temp_png[i].c_str());
+#endif
+
 	for (size_t i = 0; i < data->textures_count; ++i)
 	{
 		const cgltf_texture& texture = data->textures[i];
@@ -571,13 +632,21 @@ static size_t process(cgltf_data* data, const char* input_path, const char* outp
 
 		comma(json_textures);
 		append(json_textures, "{");
-		writeTexture(json_textures, texture, texture.image ? &images[texture.image - data->images] : NULL, data, settings);
+		const cgltf_image* texture_image = texture.image ? texture.image : (texture.avif_image ? texture.avif_image : (texture.webp_image ? texture.webp_image : texture.basisu_image));
+		writeTexture(json_textures, texture, texture_image ? &images[texture_image - data->images] : NULL, data, settings);
 		append(json_textures, "}");
 
 		assert(textures[i].remap == int(texture_offset));
 		texture_offset++;
 		ext_texture_basisu = ext_texture_basisu || texture.has_basisu;
 		ext_texture_webp = ext_texture_webp || texture.has_webp;
+
+		const cgltf_image* primary = texture.image ? texture.image : texture.avif_image;
+		bool transcoded = primary && settings.texture_mode[images[primary - data->images].kind] != TextureMode_Raw;
+
+		// once an AVIF texture is transcoded to WebP/KTX2 it no longer needs the AVIF extension
+		if (texture.has_avif && !transcoded)
+			ext_texture_avif = true;
 	}
 
 	for (size_t i = 0; i < data->materials_count; ++i)
@@ -913,6 +982,7 @@ static size_t process(cgltf_data* data, const char* input_path, const char* outp
 	    {"KHR_texture_basisu", (!json_textures.empty() && settings.texture_ktx2) || ext_texture_basisu, true},
 	    {"KHR_gaussian_splatting", ext_splatting, true},
 	    {"EXT_texture_webp", (!json_textures.empty() && settings.texture_webp) || ext_texture_webp, true},
+	    {"EXT_texture_avif", ext_texture_avif, true},
 	    {"EXT_mesh_gpu_instancing", ext_instancing, true},
 	};
 
@@ -1145,6 +1215,15 @@ int gltfpack(const char* input, const char* output, const char* report, Settings
 #ifdef __wasi__
 		fprintf(stderr, "Note: node.js builds do not support WebP due to lack of platform features; download a native build from https://github.com/zeux/meshoptimizer/releases\n");
 #endif
+		return 3;
+	}
+#endif
+
+#ifndef WITH_LIBAVIF
+	if (hasAvifImages(data) && (settings.texture_ktx2 || settings.texture_webp))
+	{
+		fprintf(stderr, "Error: input uses EXT_texture_avif but gltfpack was built without AVIF support; AVIF textures can be preserved in raw mode but can not be transcoded\n");
+		fprintf(stderr, "Note: rebuild with MESHOPT_GLTFPACK_LIBAVIF_PATH (CMake) or LIBAVIF (Make) to enable AVIF decoding, or run without -tc/-tu/-tw\n");
 		return 3;
 	}
 #endif

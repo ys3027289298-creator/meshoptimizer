@@ -1,0 +1,13 @@
+# generated gltfpack outputs and working directories
+out/
+run_out/
+run_out_nolibavif/
+ext/
+datauri/
+
+# generated media and glTF assets (recreate with generate.py)
+*.png
+*.avif
+*.glb
+*.gltf
+*.bin

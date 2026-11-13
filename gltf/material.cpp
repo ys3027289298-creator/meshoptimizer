@@ -17,6 +17,9 @@ static bool areTexturesEqual(const cgltf_texture& lhs, const cgltf_texture& rhs)
 	if (lhs.webp_image != rhs.webp_image)
 		return false;
 
+	if (lhs.avif_image != rhs.avif_image)
+		return false;
+
 	return true;
 }
 
@@ -457,6 +460,9 @@ static const cgltf_image* getTextureImage(const cgltf_texture* texture)
 
 	if (texture && texture->webp_image)
 		return texture->webp_image;
+
+	if (texture && texture->avif_image)
+		return texture->avif_image;
 
 	return NULL;
 }

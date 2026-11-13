@@ -70,7 +70,7 @@ static int readJpegBasis(const uint8_t* const data, size_t data_size, struct Web
 }
 #endif
 
-static const char* encodeWebP(const cgltf_image& image, const char* input_path, const ImageInfo& info, const Settings& settings, std::string& encoded)
+static const char* encodeWebP(const cgltf_image& image, const char* input_path, const ImageInfo& info, const Settings& settings, std::string& encoded, const std::string& avif_png)
 {
 	WebPConfig config;
 	if (!WebPConfigInit(&config))
@@ -79,8 +79,18 @@ static const char* encodeWebP(const cgltf_image& image, const char* input_path, 
 	std::string img_data;
 	std::string mime_type;
 
-	if (!readImage(image, input_path, img_data, mime_type))
-		return "error reading source file";
+	if (!avif_png.empty())
+	{
+		// AVIF sources are decoded once by prepareImagesAvif into a temporary PNG
+		if (!readFile(avif_png.c_str(), img_data))
+			return "error reading temporary file";
+		mime_type = "image/png";
+	}
+	else
+	{
+		if (!readImage(image, input_path, img_data, mime_type))
+			return "error reading source file";
+	}
 
 	if (mime_type != "image/png" && mime_type != "image/jpeg")
 		return NULL;
@@ -131,7 +141,7 @@ static const char* encodeWebP(const cgltf_image& image, const char* input_path, 
 	return NULL;
 }
 
-void encodeImagesWebP(std::string* encoded, const cgltf_data* data, const std::vector<ImageInfo>& images, const char* input_path, const Settings& settings)
+void encodeImagesWebP(std::string* encoded, const cgltf_data* data, const std::vector<ImageInfo>& images, const char* input_path, const Settings& settings, const std::string* avif_png)
 {
 	std::atomic<size_t> next_image{0};
 
@@ -146,8 +156,11 @@ void encodeImagesWebP(std::string* encoded, const cgltf_data* data, const std::v
 			const cgltf_image& image = data->images[i];
 			ImageInfo info = images[i];
 
+			if (!encoded[i].empty())
+				continue; // prepareImagesAvif already reported an error for this image
+
 			if (settings.texture_mode[info.kind] == TextureMode_WebP)
-				if (const char* error = encodeWebP(image, input_path, info, settings, encoded[i]))
+				if (const char* error = encodeWebP(image, input_path, info, settings, encoded[i], avif_png ? avif_png[i] : std::string()))
 					encoded[i] = error;
 		}
 	};

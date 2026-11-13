@@ -24,6 +24,8 @@ option(MESHOPT_INSTALL "Install library" ON)
 # Optional gltfpack components for texture compression support
 set(MESHOPT_GLTFPACK_BASISU_PATH "" CACHE STRING "") # Basis Universal, https://github.com/BinomialLLC/basis_universal
 set(MESHOPT_GLTFPACK_LIBWEBP_PATH "" CACHE STRING "") # libwebp, https://github.com/webmproject/libwebp
+set(MESHOPT_GLTFPACK_LIBAVIF_PATH "" CACHE STRING "") # libavif, https://github.com/AOMediaCodec/libavif
+set(MESHOPT_GLTFPACK_LIBAVIF_EXTRA_LIBS "" CACHE STRING "") # extra codec libs required by a static libavif (e.g. aom)
 
 set(SOURCES
     src/meshoptimizer.h
@@ -52,6 +54,7 @@ set(SOURCES
 
 set(GLTF_SOURCES
     gltf/animation.cpp
+    gltf/encodeavif.cpp
     gltf/encodebasis.cpp
     gltf/encodewebp.cpp
     gltf/fileio.cpp
@@ -176,7 +179,52 @@ if(MESHOPT_BUILD_GLTFPACK)
         endif()
     endif()
 
-    if(NOT MESHOPT_GLTFPACK_BASISU_PATH STREQUAL "" OR NOT MESHOPT_GLTFPACK_LIBWEBP_PATH STREQUAL "")
+    if(NOT MESHOPT_GLTFPACK_LIBAVIF_PATH STREQUAL "")
+        get_filename_component(LIBAVIF_PATH ${MESHOPT_GLTFPACK_LIBAVIF_PATH} ABSOLUTE)
+        if (NOT EXISTS ${LIBAVIF_PATH})
+            message(FATAL_ERROR "libavif path ${LIBAVIF_PATH} not found")
+        endif()
+
+        # a libavif source/build tree can be built directly, while an installed prefix or a build
+        # directory exports a CMake package config (named avifConfig or libavif-config)
+        find_package(avif CONFIG QUIET PATHS ${LIBAVIF_PATH} NO_DEFAULT_PATH)
+        if(NOT TARGET avif)
+            find_package(libavif CONFIG QUIET PATHS ${LIBAVIF_PATH} NO_DEFAULT_PATH)
+        endif()
+
+        if(TARGET avif)
+            target_link_libraries(gltfpack avif)
+        elseif(EXISTS ${LIBAVIF_PATH}/CMakeLists.txt)
+            add_subdirectory(${LIBAVIF_PATH} ${CMAKE_CURRENT_BINARY_DIR}/libavif EXCLUDE_FROM_ALL)
+            target_link_libraries(gltfpack avif)
+        elseif(EXISTS ${LIBAVIF_PATH}/include/avif/avif.h)
+            # minimal prefix with headers and a static/shared library but no exported package config
+            find_library(LIBAVIF_LIBRARY NAMES avif PATHS ${LIBAVIF_PATH}/lib ${LIBAVIF_PATH}/lib/x86_64-linux-gnu NO_DEFAULT_PATH)
+            if(NOT LIBAVIF_LIBRARY)
+                message(FATAL_ERROR "unable to locate libavif in ${LIBAVIF_PATH}")
+            endif()
+
+            target_include_directories(gltfpack PRIVATE ${LIBAVIF_PATH}/include)
+            target_link_libraries(gltfpack ${LIBAVIF_LIBRARY})
+
+            # libavif delegates AV1 coding to an external codec library such as libaom
+            find_library(LIBAOM_LIBRARY NAMES aom PATHS ${LIBAVIF_PATH}/lib ${LIBAVIF_PATH}/lib/x86_64-linux-gnu NO_DEFAULT_PATH)
+            if(LIBAOM_LIBRARY)
+                target_link_libraries(gltfpack ${LIBAOM_LIBRARY})
+            endif()
+
+            # static libavif builds may keep their codec libraries in a separate prefix
+            foreach(EXTRA_LIB ${MESHOPT_GLTFPACK_LIBAVIF_EXTRA_LIBS})
+                target_link_libraries(gltfpack ${EXTRA_LIB})
+            endforeach()
+        else()
+            message(FATAL_ERROR "unable to find libavif CMake package config in ${LIBAVIF_PATH}; expected an installed prefix or a source tree containing CMakeLists.txt")
+        endif()
+
+        target_compile_definitions(gltfpack PRIVATE WITH_LIBAVIF)
+    endif()
+
+    if(NOT MESHOPT_GLTFPACK_BASISU_PATH STREQUAL "" OR NOT MESHOPT_GLTFPACK_LIBWEBP_PATH STREQUAL "" OR NOT MESHOPT_GLTFPACK_LIBAVIF_PATH STREQUAL "")
         find_package(Threads REQUIRED)
         target_link_libraries(gltfpack Threads::Threads)
     endif()

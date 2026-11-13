@@ -132,28 +132,44 @@ static void fillParams(basisu::basis_compressor_params& params, const char* inpu
 	params.m_status_output = false;
 }
 
-static const char* prepareEncode(basisu::basis_compressor_params& params, const cgltf_image& image, const char* input_path, const ImageInfo& info, const Settings& settings, const std::string& temp_prefix, std::string& temp_input, std::string& temp_output)
+static const char* prepareEncode(basisu::basis_compressor_params& params, const cgltf_image& image, const char* input_path, const ImageInfo& info, const Settings& settings, const std::string& temp_prefix, std::string& temp_input, std::string& temp_output, const std::string& avif_png)
 {
 	std::string img_data;
 	std::string mime_type;
+	int width = 0, height = 0;
 
-	if (!readImage(image, input_path, img_data, mime_type))
-		return "error reading source file";
+	if (!avif_png.empty())
+	{
+		// AVIF sources are decoded once by prepareImagesAvif into a temporary PNG
+		temp_input = avif_png;
+		mime_type = "image/png";
+
+		if (!readFile(temp_input.c_str(), img_data))
+			return "error reading temporary file";
+	}
+	else
+	{
+		if (!readImage(image, input_path, img_data, mime_type))
+			return "error reading source file";
+	}
 
 	if (mime_type != "image/png" && mime_type != "image/jpeg")
 		return NULL;
 
-	int width = 0, height = 0;
 	if (!getDimensions(img_data, mime_type.c_str(), width, height))
 		return "error parsing image header";
 
 	adjustDimensions(width, height, settings.texture_scale[info.kind], settings.texture_limit[info.kind], settings.texture_pow2);
 
-	temp_input = temp_prefix + mimeExtension(mime_type.c_str());
 	temp_output = temp_prefix + ".ktx2";
 
-	if (!writeFile(temp_input.c_str(), img_data))
-		return "error writing temporary file";
+	if (avif_png.empty())
+	{
+		temp_input = temp_prefix + mimeExtension(mime_type.c_str());
+
+		if (!writeFile(temp_input.c_str(), img_data))
+			return "error writing temporary file";
+	}
 
 	int quality = settings.texture_quality[info.kind];
 	bool uastc = settings.texture_mode[info.kind] == TextureMode_UASTC;
@@ -165,7 +181,7 @@ static const char* prepareEncode(basisu::basis_compressor_params& params, const 
 	return NULL;
 }
 
-void encodeImagesBasis(std::string* encoded, const cgltf_data* data, const std::vector<ImageInfo>& images, const char* input_path, const Settings& settings)
+void encodeImagesBasis(std::string* encoded, const cgltf_data* data, const std::vector<ImageInfo>& images, const char* input_path, const Settings& settings, const std::string* avif_png)
 {
 	basisu::basisu_encoder_init();
 
@@ -183,7 +199,7 @@ void encodeImagesBasis(std::string* encoded, const cgltf_data* data, const std::
 		ImageInfo info = images[i];
 
 		if (settings.texture_mode[info.kind] == TextureMode_ETC1S || settings.texture_mode[info.kind] == TextureMode_UASTC)
-			if (const char* error = prepareEncode(params[i], image, input_path, info, settings, temp_prefix + "-" + std::to_string(i), temp_inputs[i], temp_outputs[i]))
+			if (const char* error = prepareEncode(params[i], image, input_path, info, settings, temp_prefix + "-" + std::to_string(i), temp_inputs[i], temp_outputs[i], avif_png ? avif_png[i] : std::string()))
 				encoded[i] = error;
 	}
 
@@ -205,6 +221,10 @@ void encodeImagesBasis(std::string* encoded, const cgltf_data* data, const std::
 
 	for (size_t i = 0; i < data->images_count; ++i)
 	{
+		// temporary PNGs produced from AVIF images are owned and removed by prepareImagesAvif
+		if (avif_png && !avif_png[i].empty())
+			temp_inputs[i].clear();
+
 		if (!temp_inputs[i].empty())
 			removeFile(temp_inputs[i].c_str());
 		if (!temp_outputs[i].empty())

@@ -984,20 +984,59 @@ void writeTexture(std::string& json, const cgltf_texture& texture, const ImageIn
 			append(json, size_t(texture.image - data->images));
 		}
 	}
+	else if (texture.avif_image && info && settings.texture_mode[info->kind] != TextureMode_Raw)
+	{
+		// AVIF-only texture (no fallback source): the AVIF image was transcoded, so emit the
+		// extension matching the output format instead of preserving EXT_texture_avif
+		const char* texture_ext = (settings.texture_mode[info->kind] == TextureMode_WebP) ? "EXT_texture_webp" : "KHR_texture_basisu";
+
+		comma(json);
+		append(json, "\"extensions\":{\"");
+		append(json, texture_ext);
+		append(json, "\":{\"source\":");
+		append(json, size_t(texture.avif_image - data->images));
+		append(json, "}}");
+
+		return;
+	}
+
+	// in raw mode a texture may carry a regular source together with basisu/webp/avif extensions;
+	// when transcoding, the branches above return early and replace everything with the output format
+	if (info && settings.texture_mode[info->kind] != TextureMode_Raw)
+		return;
+
+	std::string extensions;
 
 	if (texture.basisu_image)
 	{
-		comma(json);
-		append(json, "\"extensions\":{\"KHR_texture_basisu\":{\"source\":");
-		append(json, size_t(texture.basisu_image - data->images));
-		append(json, "}}");
+		comma(extensions);
+		append(extensions, "\"KHR_texture_basisu\":{\"source\":");
+		append(extensions, size_t(texture.basisu_image - data->images));
+		append(extensions, "}");
 	}
-	else if (texture.webp_image)
+
+	if (texture.webp_image)
+	{
+		comma(extensions);
+		append(extensions, "\"EXT_texture_webp\":{\"source\":");
+		append(extensions, size_t(texture.webp_image - data->images));
+		append(extensions, "}");
+	}
+
+	if (texture.avif_image)
+	{
+		comma(extensions);
+		append(extensions, "\"EXT_texture_avif\":{\"source\":");
+		append(extensions, size_t(texture.avif_image - data->images));
+		append(extensions, "}");
+	}
+
+	if (!extensions.empty())
 	{
 		comma(json);
-		append(json, "\"extensions\":{\"EXT_texture_webp\":{\"source\":");
-		append(json, size_t(texture.webp_image - data->images));
-		append(json, "}}");
+		append(json, "\"extensions\":{");
+		append(json, extensions);
+		append(json, "}");
 	}
 }
 
